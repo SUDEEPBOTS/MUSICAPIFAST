@@ -1,54 +1,39 @@
 import os
-import shutil
 import subprocess
 import requests
 from fastapi import FastAPI, HTTPException
 from motor.motor_asyncio import AsyncIOMotorClient
+from youtubesearchpython import VideosSearch
 
 # ─────────────────────────────
-# ENV CONFIG
+# CONFIG
 # ─────────────────────────────
 MONGO_URL = os.getenv("MONGO_DB_URI")
-BOT_TOKEN = os.getenv("BOT_TOKEN")          # Telegram logger bot token
-LOG_GROUP_ID = os.getenv("LOG_GROUP_ID")    # Logger GC ID (-100xxxx)
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+LOG_GROUP_ID = os.getenv("LOG_GROUP_ID")
 
 CATBOX_UPLOAD = "https://catbox.moe/user/api.php"
-
-# 👉 yt-dlp ke liye writable cookies path
-COOKIES_SRC = "/app/cookies.txt"   # repo root se aati hai
-COOKIES_PATH = "/tmp/cookies.txt"  # yt-dlp yahin use karega
+COOKIES_PATH = "/app/cookies.txt"
 
 # ─────────────────────────────
 # APP
 # ─────────────────────────────
-app = FastAPI(title="Sudeep Music API ⚡ Auto Download")
+app = FastAPI(title="Sudeep Music API ⚡ Video Auto")
 
 client = AsyncIOMotorClient(MONGO_URL)
-db = client["MusicAPI_DB1"]
-collection = db["songs_cachee"]
+db = client["MusicAPI_DB"]
+collection = db["videos_cache"]
 
-# Ultra-fast RAM cache
 MEM_CACHE = {}
-
-# ─────────────────────────────
-# INIT: copy cookies to /tmp (WRITABLE)
-# ─────────────────────────────
-if os.path.exists(COOKIES_SRC):
-    try:
-        shutil.copy(COOKIES_SRC, COOKIES_PATH)
-    except Exception as e:
-        print("Cookies copy failed:", e)
-else:
-    print("⚠️ cookies.txt not found in /app")
 
 # ─────────────────────────────
 # HELPERS
 # ─────────────────────────────
-def yt_url(video_id: str) -> str:
+def yt_url(video_id: str):
     return f"https://www.youtube.com/watch?v={video_id}"
 
-def extract_video_id(query: str):
-    q = query.strip()
+def extract_video_id(q: str):
+    q = q.strip()
     if len(q) == 11 and " " not in q:
         return q
     if "v=" in q:
@@ -56,6 +41,13 @@ def extract_video_id(query: str):
     if "youtu.be/" in q:
         return q.split("youtu.be/")[1].split("?")[0]
     return None
+
+def search_youtube(query: str):
+    search = VideosSearch(query, limit=1)
+    res = search.result().get("result")
+    if not res:
+        return None, None
+    return res[0]["id"], res[0]["title"]
 
 def send_logger(text: str):
     if not BOT_TOKEN or not LOG_GROUP_ID:
@@ -69,23 +61,23 @@ def send_logger(text: str):
     except:
         pass
 
-def upload_catbox(file_path: str) -> str:
-    with open(file_path, "rb") as f:
+def upload_catbox(path: str):
+    with open(path, "rb") as f:
         r = requests.post(
             CATBOX_UPLOAD,
             data={"reqtype": "fileupload"},
             files={"fileToUpload": f},
-            timeout=60
+            timeout=120
         )
     if r.status_code == 200 and r.text.startswith("https://"):
         return r.text.strip()
     raise Exception("Catbox upload failed")
 
-def auto_download(video_id: str) -> str:
+def auto_download_video(video_id: str) -> str:
     if not os.path.exists(COOKIES_PATH):
-        raise Exception("cookies.txt missing in container")
+        raise Exception("cookies.txt missing")
 
-    out = f"/tmp/{video_id}.mp3"
+    out = f"/tmp/{video_id}.mp4"
 
     cmd = [
         "python", "-m", "yt_dlp",
@@ -94,31 +86,34 @@ def auto_download(video_id: str) -> str:
         "--no-playlist",
         "--geo-bypass",
         "--force-ipv4",
-        "-f", "bestaudio/best",
-        "--extract-audio",
-        "--audio-format", "mp3",
-        "--audio-quality", "0",
+        "-f", "bestvideo+bestaudio/best",
+        "--merge-output-format", "mp4",
         yt_url(video_id),
         "-o", out
     ]
 
-    subprocess.run(cmd, check=True, timeout=300)
+    subprocess.run(cmd, check=True, timeout=900)
     return out
 
 # ─────────────────────────────
-# MAIN API
+# MAIN VIDEO API
 # ─────────────────────────────
-@app.get("/get")
-async def get_music(query: str):
+@app.get("/getvideo")
+async def get_video(query: str):
+    # 1️⃣ extract or search
     video_id = extract_video_id(query)
-    if not video_id:
-        raise HTTPException(400, "Invalid YouTube video id")
+    title = None
 
-    # 1️⃣ RAM CACHE (FASTEST)
+    if not video_id:
+        video_id, title = search_youtube(query)
+        if not video_id:
+            raise HTTPException(404, "No video found")
+
+    # 2️⃣ RAM cache
     if video_id in MEM_CACHE:
         return MEM_CACHE[video_id]
 
-    # 2️⃣ DB CACHE
+    # 3️⃣ DB cache
     cached = await collection.find_one({"video_id": video_id}, {"_id": 0})
     if cached:
         resp = {
@@ -129,24 +124,25 @@ async def get_music(query: str):
         MEM_CACHE[video_id] = resp
         return resp
 
-    # 3️⃣ AUTO DOWNLOAD
+    # 4️⃣ Auto download
     try:
-        local_file = auto_download(video_id)
-        catbox_link = upload_catbox(local_file)
+        file_path = auto_download_video(video_id)
+        catbox = upload_catbox(file_path)
 
-        # cleanup temp file
         try:
-            os.remove(local_file)
+            os.remove(file_path)
         except:
             pass
 
+        if not title:
+            title = video_id
+
         doc = {
             "video_id": video_id,
-            "title": video_id,
-            "catbox_link": catbox_link
+            "title": title,
+            "catbox_link": catbox
         }
 
-        # safe upsert
         await collection.update_one(
             {"video_id": video_id},
             {"$set": doc},
@@ -154,31 +150,26 @@ async def get_music(query: str):
         )
 
         resp = {
-            "t": video_id,
-            "u": catbox_link,
+            "t": title,
+            "u": catbox,
             "id": video_id
         }
         MEM_CACHE[video_id] = resp
 
-        # Telegram logger
         send_logger(
-            f"🎵 New Song Added Automatically\n\n"
+            f"🎥 New Video Added\n\n"
             f"🆔 {video_id}\n"
-            f"📦 Catbox\n"
-            f"🔗 {catbox_link}"
+            f"🔗 {catbox}"
         )
 
         return resp
 
     except Exception as e:
-        raise HTTPException(500, f"Auto download failed: {e}")
+        raise HTTPException(500, str(e))
 
 # ─────────────────────────────
-# HEALTH / UPTIME
+# HEALTH
 # ─────────────────────────────
 @app.api_route("/", methods=["GET", "HEAD"])
 async def home():
-    return {
-        "status": "ok",
-        "cache_items": len(MEM_CACHE)
-    }
+    return {"status": "ok", "cache": len(MEM_CACHE)}
