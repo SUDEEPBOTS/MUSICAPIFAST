@@ -5,3 +5,4 @@ yt-dlp                    #==2023.11.16
 requests==2.31.0
 pymongo==4.5.0
 python-multipart==0.0.6
+aiohttp
