@@ -82,28 +82,25 @@ def upload_catbox(file_path: str) -> str:
     raise Exception("Catbox upload failed")
 
 def auto_download(video_id: str) -> str:
-    """
-    yt-dlp + ffmpeg
-    Output: /tmp/<video_id>.mp3
-    """
     if not os.path.exists(COOKIES_PATH):
         raise Exception("cookies.txt missing in container")
 
     out = f"/tmp/{video_id}.mp3"
-cmd = [
-    "python", "-m", "yt_dlp",
-    "--cookies", COOKIES_PATH,
-    "--js-runtimes", "node",
-    "--no-playlist",
-    "--geo-bypass",
-    "--force-ipv4",
-    "-f", "bestaudio/best",   # 🔥 fallback added
-    "--extract-audio",
-    "--audio-format", "mp3",
-    "--audio-quality", "0",
-    yt_url(video_id),
-    "-o", out
-]
+
+    cmd = [
+        "python", "-m", "yt_dlp",
+        "--cookies", COOKIES_PATH,
+        "--js-runtimes", "node",
+        "--no-playlist",
+        "--geo-bypass",
+        "--force-ipv4",
+        "-f", "bestaudio/best",
+        "--extract-audio",
+        "--audio-format", "mp3",
+        "--audio-quality", "0",
+        yt_url(video_id),
+        "-o", out
+    ]
 
     subprocess.run(cmd, check=True, timeout=300)
     return out
