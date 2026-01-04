@@ -90,20 +90,20 @@ def auto_download(video_id: str) -> str:
         raise Exception("cookies.txt missing in container")
 
     out = f"/tmp/{video_id}.mp3"
-    cmd = [
+cmd = [
     "python", "-m", "yt_dlp",
     "--cookies", COOKIES_PATH,
     "--js-runtimes", "node",
     "--no-playlist",
     "--geo-bypass",
     "--force-ipv4",
-    "-f", "bestaudio",
+    "-f", "bestaudio/best",   # 🔥 fallback added
     "--extract-audio",
     "--audio-format", "mp3",
     "--audio-quality", "0",
     yt_url(video_id),
     "-o", out
-    ]
+]
 
     subprocess.run(cmd, check=True, timeout=300)
     return out
